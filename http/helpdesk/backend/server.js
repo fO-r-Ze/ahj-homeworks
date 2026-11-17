@@ -4,6 +4,14 @@ import bodyParser from "body-parser";
 import * as crypto from "crypto";
 import pino from 'pino';
 import pinoPretty from 'pino-pretty';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+// Получаем __dirname для ES-модулей
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DATA_FILE = path.join(__dirname, 'tickets.json');
 
 const app = express();
 const logger = pino(pinoPretty());
@@ -21,37 +29,66 @@ app.use((req, res, next) => {
   next();
 });
 
-let tickets = [
-  {
-    id: crypto.randomUUID(),
-    name: "Поменять краску в принтере, ком. 404",
-    description: "Принтер HP LJ-1210, картриджи на складе",
-    status: false,
-    created: Date.now(),
-  },
-  {
-    id: crypto.randomUUID(),
-    name: "Переустановить Windows, PC-Hall24",
-    description: "",
-    status: false,
-    created: Date.now(),
-  },
-  {
-    id: crypto.randomUUID(),
-    name: "Установить обновление KB-31642dv3875",
-    description: "Вышло критическое обновление для Windows",
-    status: false,
-    created: Date.now(),
-  },
-];
+// Фиксированные даты для дефолтных тикетов (чтобы они не менялись)
+const DEFAULT_DATE = 1700000000000; 
+
+// Функция сохранения тикетов в файл
+const saveTickets = (data) => {
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2), 'utf8');
+  } catch (error) {
+    logger.error(`Error saving tickets to file: ${error.message}`);
+  }
+};
+
+// Загрузка тикетов из файла при старте
+let tickets = [];
+try {
+  if (fs.existsSync(DATA_FILE)) {
+    const fileContent = fs.readFileSync(DATA_FILE, 'utf8');
+    tickets = JSON.parse(fileContent);
+    logger.info('Tickets loaded from file');
+  } else {
+    // Если файла нет, создаем дефолтные тикеты
+    tickets = [
+      {
+        id: crypto.randomUUID(),
+        name: "Поменять краску в принтере, ком. 404",
+        description: "Принтер HP LJ-1210, картриджи на складе",
+        status: false,
+        created: DEFAULT_DATE,
+      },
+      {
+        id: crypto.randomUUID(),
+        name: "Переустановить Windows, PC-Hall24",
+        description: "",
+        status: false,
+        created: DEFAULT_DATE,
+      },
+      {
+        id: crypto.randomUUID(),
+        name: "Установить обновление KB-31642dv3875",
+        description: "Вышло критическое обновление для Windows",
+        status: false,
+        created: DEFAULT_DATE,
+      },
+    ];
+    saveTickets(tickets);
+    logger.info('Default tickets created and saved');
+  }
+} catch (error) {
+  logger.error(`Error loading tickets: ${error.message}`);
+}
 
 app.use(async (request, response) => {
   const { method, id } = request.query;
+  
   switch (method) {
     case "allTickets":
       logger.info('All tickets has been called');
       response.send(JSON.stringify(tickets)).end();
       break;
+      
     case "ticketById": {
       const ticket = tickets.find((ticket) => ticket.id === id);
       if (!ticket) {
@@ -64,6 +101,7 @@ app.use(async (request, response) => {
       response.send(JSON.stringify(ticket)).end();
       break;
     }
+    
     case "createTicket": {
       try {
         const createData = request.body;
@@ -72,9 +110,10 @@ app.use(async (request, response) => {
           name: createData.name,
           status: false,
           description: createData.description || "",
-          created: Date.now(),
+          created: Date.now(), // Новые тикеты получают реальную дату создания
         };
         tickets.push(newTicket);
+        saveTickets(tickets); // Сохраняем в файл
         logger.info(`New ticket created: ${JSON.stringify(newTicket)}`);
         response.send(JSON.stringify(newTicket)).end();
       } catch (error) {
@@ -83,10 +122,12 @@ app.use(async (request, response) => {
       }
       break;
     }
+    
     case "deleteById": {
       const ticket = tickets.find((ticket) => ticket.id === id);
       if (ticket) {
         tickets = tickets.filter((ticket) => ticket.id !== id);
+        saveTickets(tickets); // Сохраняем в файл
         logger.info(`Ticket deleted: ${JSON.stringify(ticket)}`);
         response.status(204).end();
       } else {
@@ -98,13 +139,15 @@ app.use(async (request, response) => {
       }
       break;
     }
+    
     case "updateById": {
       const ticket = tickets.find((ticket) => ticket.id === id);
       const updateData = request.body;
       if (ticket) {
         Object.assign(ticket, updateData);
+        saveTickets(tickets); // Сохраняем в файл
         logger.info(`Ticket updated: ${JSON.stringify(ticket)}`);
-        response.send(JSON.stringify(tickets));
+        response.send(JSON.stringify(ticket)); // Отдаем обновленный тикет
       } else {
         logger.warn(`Ticket not found: ${id}`);
         response
@@ -114,6 +157,7 @@ app.use(async (request, response) => {
       }
       break;
     }
+    
     default:
       logger.warn(`Unknown method: ${method}`);
       response.status(404).end();
@@ -126,7 +170,7 @@ const port = process.env.PORT || 7070;
 const bootstrap = async () => {
   try {
     app.listen(port, () =>
-        logger.info(`Server has been started on http://localhost:${port}`)
+        logger.info(`Server has been started on port ${port}`)
     );
   } catch (error) {
     console.error(error);
