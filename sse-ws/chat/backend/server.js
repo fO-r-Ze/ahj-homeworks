@@ -13,11 +13,16 @@ import WebSocket, { WebSocketServer } from "ws";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const USERS_FILE = path.join(__dirname, "users.json");
-const MESSAGES_FILE = path.join(__dirname, "messages.json");
+// На Render __dirname read-only, writable только /tmp.
+// Локально пишем рядом с сервером, на Render — в /tmp.
+const DATA_DIR =
+  process.env.NODE_ENV === "production" ? "/tmp" : __dirname;
+
+const USERS_FILE = path.join(DATA_DIR, "users.json");
+const MESSAGES_FILE = path.join(DATA_DIR, "messages.json");
 const MAX_STORED_MESSAGES = 1000;
 const MAX_HISTORY_ON_CONNECT = 100;
-const HEARTBEAT_INTERVAL = 20000;
+const HEARTBEAT_INTERVAL = 60000;
 
 const app = express();
 const logger = pino(pinoPretty());
@@ -65,11 +70,15 @@ const server = http.createServer(app);
 const wsServer = new WebSocketServer({ server });
 
 // ---------- Heartbeat ----------
+// ВАЖНО: terminate() здесь НЕ используется.
+// Через прокси Render control frames (ping/pong) могут не доходить,
+// и terminate() будет убивать живые соединения → code 1006 у клиента.
+// Просто логируем, если pong не пришёл, и оставляем закрытие
+// на TCP-таймаут Render / close-frame клиента.
 const heartbeat = setInterval(() => {
   wsServer.clients.forEach((ws) => {
     if (ws.isAlive === false) {
-      ws.terminate();
-      return;
+      logger.warn(`No pong from ${ws.user?.name ?? "unknown"} (stale)`);
     }
     ws.isAlive = false;
     ws.ping();
