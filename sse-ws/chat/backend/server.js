@@ -17,6 +17,7 @@ const USERS_FILE = path.join(__dirname, "users.json");
 const MESSAGES_FILE = path.join(__dirname, "messages.json");
 const MAX_STORED_MESSAGES = 1000;
 const MAX_HISTORY_ON_CONNECT = 100;
+const HEARTBEAT_INTERVAL = 20000;
 
 const app = express();
 const logger = pino(pinoPretty());
@@ -63,6 +64,21 @@ const onlineUsers = [];
 const server = http.createServer(app);
 const wsServer = new WebSocketServer({ server });
 
+// ---------- Heartbeat ----------
+const heartbeat = setInterval(() => {
+  wsServer.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      ws.terminate();
+      return;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, HEARTBEAT_INTERVAL);
+
+server.on("close", () => clearInterval(heartbeat));
+
+// ---------- Broadcast helpers ----------
 function broadcast(payload) {
   const json = JSON.stringify(payload);
   [...wsServer.clients]
@@ -105,6 +121,11 @@ app.post("/new-user", (req, res) => {
 
 // ---------- WebSocket ----------
 wsServer.on("connection", (ws, req) => {
+  ws.isAlive = true;
+  ws.on("pong", () => {
+    ws.isAlive = true;
+  });
+
   const url = new URL(req.url, "http://localhost");
   const userId = url.searchParams.get("userId");
   const user = userId ? registeredUsers.find((u) => u.id === userId) : null;
@@ -143,6 +164,11 @@ wsServer.on("connection", (ws, req) => {
       return;
     }
 
+    // keepalive от клиента — игнорируем
+    if (msg.type === "ping") {
+      return;
+    }
+
     if (
       msg.type === "send" &&
       typeof msg.message === "string" &&
@@ -167,7 +193,8 @@ wsServer.on("connection", (ws, req) => {
   });
 
   ws.on("close", () => {
-    // Не удаляем из онлайна, если у этого же пользователя осталось другое открытое соединение
+    // Не удаляем из онлайна, если у этого же пользователя осталось
+    // другое открытое соединение (например, вторая вкладка)
     const stillConnected = [...wsServer.clients].some(
       (c) =>
         c !== ws &&
